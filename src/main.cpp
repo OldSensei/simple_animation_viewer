@@ -13,9 +13,12 @@
 #include <string>
 #include <string_view>
 
+#include "resource.h"
+
 #include "editable_list_view.hpp"
 #include "image_cachable_canvas.hpp"
 #include "time_line.hpp"
+#include "video_file_creator.hpp"
 
 #pragma comment (lib,"Gdiplus.lib")
 #pragma comment (lib,"Comctl32.lib")
@@ -25,7 +28,6 @@ namespace
 	constexpr int WINDOW_WIDTH = 1480;
 	constexpr int WINDOW_HEIGHT = 768;
 
-	constexpr std::uint64_t IDC_LOAD = 0x1;
 	constexpr std::uint64_t IDC_TIMER_EDIT = 0x2;
 	constexpr std::uint64_t IDC_LOOP_BOX = 0x3;
 	constexpr std::uint64_t IDC_INVERSE_END_BOX = 0x4;
@@ -62,8 +64,6 @@ namespace
 		{
 			HWND appHandle = nullptr;
 			HWND canvas = nullptr;
-			HWND loadButton = nullptr;
-			HWND fileList = nullptr;
 			HWND playButton = nullptr;
 			HWND stopButton = nullptr;
 			HWND loopBox = nullptr;
@@ -78,6 +78,20 @@ namespace
 
 	} gAppState = {};
 
+
+	std::optional<std::chrono::milliseconds> fromWstring(const std::wstring& data)
+	{
+		std::uint64_t value = 0;
+		char buf[10] = { 0 };
+
+		int len = WideCharToMultiByte(CP_UTF8, 0, data.c_str(), static_cast<int>(data.length()), buf, 10, nullptr, nullptr);
+		auto result = std::from_chars(buf, buf + len, value);
+		if (result.ec == std::errc())
+		{
+			return std::optional<std::chrono::milliseconds>(std::chrono::milliseconds(value));
+		}
+		return std::nullopt;
+	}
 
 	bool loadData(std::wstring_view path, ApplicationData& data)
 	{
@@ -135,7 +149,7 @@ namespace
 			CoUninitialize();
 		}
 
-		return result;;
+		return result;
 	}
 
 	bool processPlayButton(ApplicationData& appData, ApplicationState& appState)
@@ -146,13 +160,11 @@ namespace
 		{
 			const auto& name = row[0];
 			const auto& timerString = row[1];
-			std::uint64_t value = 0;
-			char buf[10] = { 0 };
-			int len = WideCharToMultiByte(CP_UTF8, 0, timerString.c_str(), static_cast<int>(timerString.length()), buf, 10, nullptr, nullptr);
-			auto result = std::from_chars(buf, buf + len, value);
-			if (result.ec == std::errc())
+
+			auto value = fromWstring(timerString);
+			if (value)
 			{
-				appState.appHandles.timeline->add(name, std::chrono::milliseconds(value));
+				appState.appHandles.timeline->add(name, *value);
 			}
 		}
 
@@ -172,7 +184,7 @@ namespace
 
 	bool processChild(WPARAM wp, ApplicationState& appState)
 	{
-		if (LOWORD(wp) == IDC_LOAD)
+		if (LOWORD(wp) == ID_IMAGE_ADDFOLDER)
 		{
 			selectFolderDialog(gAppData);
 			updateFileListView(gAppData, appState);
@@ -191,21 +203,30 @@ namespace
 			return true;
 		}
 
-		return false;
-	}
+		if (LOWORD(wp) == ID_IMAGES_WRITEVIDEO)
+		{
+			if (appState.appHandles.nfileList)
+			{
+				auto data = appState.appHandles.nfileList->getListViewData();
+				std::vector<std::pair<std::filesystem::path, std::chrono::milliseconds>> videoData;
+				for(const auto& row : data)
+				{
+					auto durationValue = fromWstring(row[1]);
+					auto it = std::find_if(gAppData.imageData.begin(), gAppData.imageData.end(),
+											[name = row[0]](const auto& imgData) { return name == imgData.name; });
 
-	bool processTimer(ApplicationState& appState, ApplicationData& data, WPARAM wp)
-	{
-		//if (data.tl.isFired(wp))
-		//{
-		//	data.tl.advance();
-		//	auto frameIndex = data.tl.getFrame();
-		//
-		//	//auto& imgPtr = data.images[frameIndex];
-		//	//Gdiplus::Graphics graphics(appState.appHandles.canvas);
-		//	//graphics.DrawImage(imgPtr.get(), 0, 0);
-		//}
-		return true;
+					if (it != gAppData.imageData.end() && durationValue)
+					{
+						videoData.push_back(std::pair<std::filesystem::path, std::chrono::milliseconds>{it->path, *durationValue});
+					}
+				}
+
+				SAV::VideoFileCreator vfc{ 1024, 768, 800000 };
+				vfc.write(videoData);
+			}
+		
+		}
+		return false;
 	}
 
 	LRESULT CALLBACK mainWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -226,10 +247,6 @@ namespace
 				processChild(wp, gAppState);
 				return 1;
 
-			//case WM_TIMER:
-			//	processTimer(gAppState, gAppData, wp);
-			//	return 1;
-
 			case WM_DESTROY:
 				PostQuitMessage(0);
 				gAppState.isExit = true;
@@ -248,21 +265,9 @@ namespace
 		int buttonHeight = 20;
 
 		int left = appState.windowRect.right - buttonWidth - 10;
-		int top = 10;
-
-		appState.appHandles.loadButton = ::CreateWindow(
-			WC_BUTTON,
-			L"load", 
-			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 
-			left, top, 
-			buttonWidth, buttonHeight,
-			appState.appHandles.appHandle,
-			reinterpret_cast<HMENU>(IDC_LOAD),
-			hInstance,
-			NULL);
 
 		int listHeight = 300;
-		int listTop = top + buttonHeight + 10;
+		int listTop = 10 ;
 		::RECT listViewRect{left, listTop, left + buttonWidth, listTop + listHeight };
 		appState.appHandles.nfileList.emplace(appState.appHandles.appHandle, listViewRect,
 			[&appState](const std::vector<std::wstring>& data)
@@ -373,7 +378,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 	wndclass.hCursor = static_cast<HCURSOR>(::LoadCursor(0, IDC_ARROW));
 	wndclass.hIcon = 0;
 	wndclass.hIconSm = 0;
-	wndclass.lpszMenuName = nullptr;
+	wndclass.lpszMenuName = MAKEINTRESOURCE(IDR_IMAGE_MENU);
 	wndclass.cbClsExtra = 0;
 	wndclass.cbWndExtra = 0;
 

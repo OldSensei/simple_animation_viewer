@@ -199,41 +199,7 @@ bool SAV::EditableListView::processNotify(WPARAM wp, LPARAM lp)
 			processSelectionChanged();
 			return true;
 		}
-
-
-		//case NM_CLICK:
-		//{
-		//	if (index != -1)
-		//	{
-		//		auto& imgPtr = data.images[index];
-		//		Gdiplus::Graphics graphics(appState.appHandles.canvas);
-		//		graphics.DrawImage(imgPtr.get(), 0, 0);
-		//		return true;
-		//	}
-		//}
-		//break;
 	}
-
-	//if (code == NM_CLICK)
-	//{
-	//}
-	//
-	//if (code == NM_DBLCLK)
-	//{
-	//	auto* itemActivate = (LPNMITEMACTIVATE)nmhdr;
-	//	//showInplaceEditControl(itemActivate->hdr.hwndFrom, appState, itemActivate->iItem);
-	//	return true;
-	//}
-	//
-	//if (code == NM_RETURN)
-	//{
-	//	auto index = ListView_GetNextItem(nmhdr->hwndFrom, -1, LVNI_SELECTED);
-	//	if (index != -1)
-	//	{
-	//		//showInplaceEditControl(nmhdr->hwndFrom, appState, index);
-	//	}
-	//	return true;
-	//}
 
 	return false;
 }
