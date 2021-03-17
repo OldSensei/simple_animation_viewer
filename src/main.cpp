@@ -2,7 +2,6 @@
 #include <gdiplus.h>
 #include <gdiplusheaders.h>
 #include <CommCtrl.h>
-#include <shobjidl_core.h>
 
 #include <array>
 #include <chrono>
@@ -15,8 +14,10 @@
 
 #include "resource.h"
 
+#include "dialogs.hpp"
 #include "editable_list_view.hpp"
 #include "image_cachable_canvas.hpp"
+#include "program_data.hpp"
 #include "time_line.hpp"
 #include "video_file_creator.hpp"
 
@@ -34,31 +35,9 @@ namespace
 	constexpr std::uint64_t IDC_PLAY = 0x5;
 	constexpr std::uint64_t IDC_STOP = 0x6;
 
-
-	using ListViewString = std::pair<std::array<wchar_t, 256>, std::array<wchar_t, 10>>;
-
-	std::vector<ListViewString> gStringViewData;
-
-	struct ImageData
-	{
-		ImageData(const std::wstring& nameValue, std::filesystem::path pathValue) :
-			name{ nameValue },
-			path{ std::move(pathValue) }
-		{};
-
-		ImageData(ImageData&&) = default;
-
-		std::wstring name;
-		std::filesystem::path path;
-	};
-
-	struct ApplicationData
-	{
-		std::vector<ImageData> imageData;
-	} gAppData = {};
-
 	struct ApplicationState
 	{
+		SAV::AnimationData animationData;
 		bool isExit = false;
 		struct
 		{
@@ -75,8 +54,7 @@ namespace
 		} appHandles;
 
 		::RECT windowRect;
-
-	} gAppState = {};
+	};
 
 
 	std::optional<std::chrono::milliseconds> fromWstring(const std::wstring& data)
@@ -93,71 +71,30 @@ namespace
 		return std::nullopt;
 	}
 
-	bool loadData(std::wstring_view path, ApplicationData& data)
-	{
-		std::transform(std::filesystem::directory_iterator(std::filesystem::path(path)), std::filesystem::directory_iterator(), std::back_inserter(data.imageData),
-			[](const auto& file)
-			{ 
-				return ImageData{ file.path().filename().wstring() , file.path()};
-			});
-		return true;
-	}
-
-	bool updateFileListView(const ApplicationData& data, ApplicationState& app)
+	bool updateFileListView(SAV::AnimationData::Animations&& animations, SAV::EditableListView& listView)
 	{
 		std::vector<std::vector<std::wstring>> listViewData;
-		for(const auto& file : data.imageData)
+
+		for (auto&& animation : animations)
 		{
-			listViewData.push_back({file.name, L"0"});
+			auto duration = std::to_wstring(animation.duration().count());
+			listViewData.push_back({ animation.name(), std::move(duration) });
 		}
-		app.appHandles.nfileList->updateData(listViewData);
+		listView.updateData(listViewData);
 
 		return true;
 	}
 
-	bool selectFolderDialog(ApplicationData& appData)
-	{
-		bool result = false;
-		if (SUCCEEDED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)))
-		{
-			IFileDialog* openDialog;
-			if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&openDialog))))
-			{
-				DWORD dwOptions;
-				if (SUCCEEDED(openDialog->GetOptions(&dwOptions)))
-				{
-					openDialog->SetOptions(dwOptions | FOS_PICKFOLDERS);
-
-					if (SUCCEEDED(openDialog->Show(NULL)))
-					{
-						IShellItem* pItem;
-						if (SUCCEEDED(openDialog->GetResult(&pItem)))
-						{
-							PWSTR folderPath;
-
-							if (SUCCEEDED(pItem->GetDisplayName(SIGDN_FILESYSPATH, &folderPath)))
-							{
-								loadData(folderPath, appData);
-								CoTaskMemFree(folderPath);
-							}
-							pItem->Release();
-						}
-					}
-				}
-			}
-
-			CoUninitialize();
-		}
-
-		return result;
-	}
-
-	bool processPlayButton(ApplicationData& appData, ApplicationState& appState)
+	bool processPlayButton(ApplicationState& appState)
 	{
 		appState.appHandles.timeline->reset();
 		auto data = appState.appHandles.nfileList->getListViewData();
 		for (const auto& row : data)
 		{
+			if (auto filepath = appState.animationData.getAnimationFilePath(row[0]); filepath)
+			{
+
+			}
 			const auto& name = row[0];
 			const auto& timerString = row[1];
 
@@ -186,14 +123,18 @@ namespace
 	{
 		if (LOWORD(wp) == ID_IMAGE_ADDFOLDER)
 		{
-			selectFolderDialog(gAppData);
-			updateFileListView(gAppData, appState);
+			auto folder = SAV::selectFolderDialog();
+			if (folder)
+			{
+				auto&& animations = appState.animationData.loadFromFolder(std::filesystem::path(*folder));
+				updateFileListView(std::move(animations), *appState.appHandles.nfileList);
+			}
 			return true;
 		}
 
 		if (LOWORD(wp) == IDC_PLAY)
 		{
-			processPlayButton(gAppData, appState);
+			processPlayButton(appState);
 			return true;
 		}
 
@@ -208,53 +149,94 @@ namespace
 			if (appState.appHandles.nfileList)
 			{
 				auto data = appState.appHandles.nfileList->getListViewData();
-				std::vector<std::pair<std::filesystem::path, std::chrono::milliseconds>> videoData;
+				std::vector<SAV::AnimationDescription> videoData;
+
 				for(const auto& row : data)
 				{
-					auto durationValue = fromWstring(row[1]);
-					auto it = std::find_if(gAppData.imageData.begin(), gAppData.imageData.end(),
-											[name = row[0]](const auto& imgData) { return name == imgData.name; });
-
-					if (it != gAppData.imageData.end() && durationValue)
+					auto filepath = appState.animationData.getAnimationFilePath(row[0]);
+					if (filepath)
 					{
-						videoData.push_back(std::pair<std::filesystem::path, std::chrono::milliseconds>{it->path, *durationValue});
+						videoData.push_back( SAV::AnimationDescription{ filepath->wstring(), row[1] } );
 					}
 				}
 
-				SAV::VideoFileCreator vfc{ 1024, 768, 800000 };
+				// hack: added reverse order
+				//for (auto it = data.rbegin(); it != data.rend(); it++)
+				//{
+				//	auto& row = *it;
+				//	auto durationValue = fromWstring(row[1]);
+				//	auto f_it = std::find_if(gAppData.imageData.begin(), gAppData.imageData.end(),
+				//		[name = row[0]](const auto& imgData) { return name == imgData.name; });
+				//
+				//	if (f_it != gAppData.imageData.end() && durationValue)
+				//	{
+				//		videoData.push_back(std::pair<std::filesystem::path, std::chrono::milliseconds>{f_it->path, * durationValue});
+				//	}
+				//}
+				SAV::VideoFileCreator vfc{ 1920, 1080, 14000000 };
 				vfc.write(videoData);
 			}
-		
+			return true;
+		}
+
+		if (LOWORD(wp) == ID_PROGRAMM_SAVE)
+		{
+			auto filepath = SAV::saveFileDialog();
+			if (filepath)
+			{
+				auto data = appState.appHandles.nfileList->getListViewData();
+				appState.animationData.saveToFile( *filepath, data );
+			}
+			return true;
+		}
+
+		if (LOWORD(wp) == ID_PROGRAMM_LOAD)
+		{
+			auto filepath = SAV::loadFileDialog();
+			if (filepath)
+			{
+				auto&& animations = appState.animationData.loadFromFile(*filepath);
+				updateFileListView(std::move(animations), *appState.appHandles.nfileList);
+			}
+			return true;
 		}
 		return false;
 	}
 
 	LRESULT CALLBACK mainWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	{
-		switch (msg)
+		if (msg == WM_CREATE)
 		{
-			case WM_NOTIFY:
-				if (gAppState.appHandles.nfileList)
-				{
-					if (gAppState.appHandles.nfileList->processNotify(wp, lp))
-					{
-						return 1;
-					}
-				}
-				return DefWindowProc(hwnd, msg, wp, lp);
-
-			case WM_COMMAND:
-				processChild(wp, gAppState);
-				return 1;
-
-			case WM_DESTROY:
-				PostQuitMessage(0);
-				gAppState.isExit = true;
-				return 1;
-
-			default:
-				return DefWindowProc(hwnd, msg, wp, lp);
+			LPCREATESTRUCT cs = reinterpret_cast<LPCREATESTRUCT>(lp);
+			auto state = reinterpret_cast<ApplicationState*>(cs->lpCreateParams);
+			SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
 		}
+		else
+		{
+			auto appState = reinterpret_cast<ApplicationState*>(::GetWindowLongPtr(hwnd, GWLP_USERDATA));
+			switch (msg)
+			{
+				case WM_NOTIFY:
+					if (appState->appHandles.nfileList)
+					{
+						if (appState->appHandles.nfileList->processNotify(wp, lp))
+						{
+							return 1;
+						}
+					}
+					break;
+
+				case WM_COMMAND:
+					processChild(wp, *appState);
+					return 1;
+
+				case WM_DESTROY:
+					PostQuitMessage(0);
+					appState->isExit = true;
+					return 1;
+			}
+		}
+		return DefWindowProc(hwnd, msg, wp, lp);
 	}
 
 	bool createAppWindows(HINSTANCE hInstance, ApplicationState& appState)
@@ -269,34 +251,30 @@ namespace
 		int listHeight = 300;
 		int listTop = 10 ;
 		::RECT listViewRect{left, listTop, left + buttonWidth, listTop + listHeight };
-		appState.appHandles.nfileList.emplace(appState.appHandles.appHandle, listViewRect,
+		appState.appHandles.nfileList.emplace(appState.appHandles.appHandle, listViewRect);
+		appState.appHandles.nfileList->setOnSelectHandler(
 			[&appState](const std::vector<std::wstring>& data)
 			{
 				if (!data.empty())
 				{
 					const auto& name = data[0];
-					for (const auto& imgData : gAppData.imageData)
+					auto animationFilePath = appState.animationData.getAnimationFilePath(name);
+					if (animationFilePath)
 					{
-						if (imgData.name == name)
-						{
-							appState.appHandles.imageCanvas->drawImage(imgData.path);
-							return;
-						}
+						appState.appHandles.imageCanvas->drawImage(*animationFilePath);
 					}
 				}
 			});
+
 		appState.appHandles.nfileList->createHeaders(std::initializer_list<SAV::HeaderDescription>{ {L"Pictures", 70}, {L"Time", 30} });
 
 		appState.appHandles.timeline.emplace(appState.appHandles.appHandle,
 			[&appState](const std::wstring& name)
 			{
-				for (const auto& imgData : gAppData.imageData)
+				auto aimationFilePath = appState.animationData.getAnimationFilePath(name);
+				if (aimationFilePath)
 				{
-					if (imgData.name == name)
-					{
-						appState.appHandles.imageCanvas->drawImage(imgData.path);
-						return;
-					}
+					appState.appHandles.imageCanvas->drawImage(*aimationFilePath);
 				}
 			});
 
@@ -349,11 +327,17 @@ namespace
 		return true;
 	}
 
-	void shutdown()
+	struct GdiPlusDeleter
 	{
-		gAppData.imageData.clear();
-		gAppState.appHandles.imageCanvas.reset();
-	}
+		using pointer = ULONG_PTR;
+		void operator()(pointer& p)
+		{
+			if (p)
+			{
+				Gdiplus::GdiplusShutdown(p);
+			}
+		}
+	};
 }
 
 
@@ -361,8 +345,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 {
 	Gdiplus::GdiplusStartupInput gdiplusStartupInput;
 	ULONG_PTR           gdiplusToken;
-
 	Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
+	std::unique_ptr<ULONG_PTR, GdiPlusDeleter> gdiplusHandle(gdiplusToken, GdiPlusDeleter());
 
 	constexpr const  wchar_t* wndClsName = L"Simple.Animation.Viewer.window";
 
@@ -384,34 +368,35 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
 	::RegisterClassEx(&wndclass);
 
+	ApplicationState appState;
 	::RECT viewportRect{ 0L, 0L, static_cast<LONG>(WINDOW_WIDTH), static_cast<LONG>(WINDOW_HEIGHT) };
-	gAppState.windowRect = viewportRect;
-	::AdjustWindowRect(&gAppState.windowRect, WS_OVERLAPPEDWINDOW, false);
+	::AdjustWindowRect(&viewportRect, WS_OVERLAPPEDWINDOW, false);
+	appState.windowRect = viewportRect;
 
-	gAppState.appHandles.appHandle = ::CreateWindowEx(
+	appState.appHandles.appHandle = ::CreateWindowEx(
 		0,
 		wndClsName,
 		L"Simple.Animation.Viewer",
 		WS_OVERLAPPEDWINDOW,
 		10, 10,
-		gAppState.windowRect.right - gAppState.windowRect.left,
-		gAppState.windowRect.bottom - gAppState.windowRect.top,
+		appState.windowRect.right - appState.windowRect.left,
+		appState.windowRect.bottom - appState.windowRect.top,
 		nullptr,
 		nullptr,
 		hInstance,
-		nullptr
+		&appState
 	);
 
-	if (!gAppState.appHandles.appHandle)
+	if (!appState.appHandles.appHandle)
 	{
 		::UnregisterClass(wndClsName, hInstance);
 		return -1;
 	}
-	
-	createAppWindows(hInstance, gAppState);
 
-	::ShowWindow(gAppState.appHandles.appHandle, SW_SHOWDEFAULT);
-	::UpdateWindow(gAppState.appHandles.appHandle);
+	createAppWindows(hInstance, appState);
+
+	::ShowWindow(appState.appHandles.appHandle, SW_SHOWDEFAULT);
+	::UpdateWindow(appState.appHandles.appHandle);
 
 	MSG msg = {};
 	while (GetMessage(&msg, nullptr, 0, 0))
@@ -420,7 +405,5 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 		::DispatchMessage(&msg);
 	}
 
-	shutdown();
-	Gdiplus::GdiplusShutdown(gdiplusToken);
 	return 0;
 }

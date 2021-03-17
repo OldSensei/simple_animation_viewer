@@ -10,7 +10,7 @@
 #include <chrono>
 #include <memory>
 
-
+#include "program_data.hpp"
 #include "time_line.hpp"
 
 namespace SAV
@@ -19,6 +19,7 @@ namespace SAV
 	{
 	public:
 		VideoFileCreator(std::uint32_t width, std::uint32_t height, std::uint32_t bitrate);
+		HRESULT write(const std::vector<AnimationDescription>& data);
 		HRESULT write(const std::vector<std::pair<std::filesystem::path, std::chrono::milliseconds>>& data);
 
 	private:

@@ -23,7 +23,7 @@ namespace SAV
 		using OnSelectHandler = std::function<void(const std::vector<std::wstring>&)>;
 
 	public:
-		explicit EditableListView(HWND parent, const RECT& position, const OnSelectHandler& handler);
+		explicit EditableListView(HWND parent, const RECT& position);
 
 		template<typename Container, typename T = typename Container::value_type, typename = std::enable_if_t<std::is_same_v<HeaderDescription, T>>>
 		void createHeaders(const Container& descriptions)
@@ -42,6 +42,11 @@ namespace SAV
 		void processSelectionChanged();
 
 		std::vector<std::vector<std::wstring>> getListViewData() const;
+
+		void setOnSelectHandler(const OnSelectHandler& handler)
+		{
+			m_onSelectHandler = handler;
+		}
 
 	private:
 		void addHeader(const HeaderDescription& description, int index);

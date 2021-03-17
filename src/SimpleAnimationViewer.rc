@@ -67,8 +67,10 @@ BEGIN
         MENUITEM "Add folder",                  ID_IMAGE_ADDFOLDER
         MENUITEM "Write video",                 ID_IMAGES_WRITEVIDEO
     END
-    POPUP "Programm"
+    POPUP "Program"
     BEGIN
+        MENUITEM "Save",                        ID_PROGRAMM_SAVE
+        MENUITEM "Load",                        ID_PROGRAMM_LOAD
         MENUITEM "Exit",                        ID_PROGRAMM_EXIT
     END
 END

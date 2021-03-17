@@ -32,17 +32,18 @@ namespace SAV
 		hr = initializeSinkWriter();
 	}
 
-    HRESULT VideoFileCreator::write(const std::vector<std::pair<std::filesystem::path, std::chrono::milliseconds>>& data)
+    HRESULT VideoFileCreator::write(const std::vector<AnimationDescription>& data)
     {
-        std::unique_ptr<Gdiplus::Bitmap> videoFrameBitmap{ new Gdiplus::Bitmap(m_width, m_height)};
+        std::unique_ptr<Gdiplus::Bitmap> videoFrameBitmap{ new Gdiplus::Bitmap(m_width, m_height) };
         std::unique_ptr<Gdiplus::Graphics> frameGraphics{ new Gdiplus::Graphics(videoFrameBitmap.get()) };
         HRESULT hr = S_OK;
+
         for (const auto& frame : data)
         {
-            std::unique_ptr<Gdiplus::Bitmap> originalBitmap = std::make_unique<Gdiplus::Bitmap>(frame.first.wstring().c_str());
-            frameGraphics->DrawImage(originalBitmap.get(), 0, 0);
-            
-            auto frameCount = static_cast<std::uint32_t>(std::ceil(frame.second.count() / m_frameDuration));
+            std::unique_ptr<Gdiplus::Bitmap> originalBitmap = std::make_unique<Gdiplus::Bitmap>(frame.path().wstring().c_str());
+            frameGraphics->DrawImage(originalBitmap.get(), 0, 0, m_width, m_height);
+
+            auto frameCount = static_cast<std::uint32_t>(std::ceil(frame.duration().count() / m_frameDuration));
 
             for (std::uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex)
             {
@@ -79,7 +80,7 @@ namespace SAV
 			return hr;
 		}
 
-		hr = MFCreateSinkWriterFromURL(L"output.mp4" /*L"output.wmv"*/, NULL, attributes.get() /*NULL*/, m_sinkWriter.put());
+		hr = MFCreateSinkWriterFromURL(L"output.mp4", NULL, attributes.get(), m_sinkWriter.put());
 		if (!SUCCEEDED(hr))
 		{
 			return hr;
@@ -97,7 +98,7 @@ namespace SAV
 			return hr;
 		}
 
-        hr = mediaTypeOut->SetGUID(MF_MT_SUBTYPE, /*MFVideoFormat_WMV3); MFVideoFormat_M4S2*/ MFVideoFormat_H264);
+        hr = mediaTypeOut->SetGUID(MF_MT_SUBTYPE, /*MFVideoFormat_WMV3); MFVideoFormat_M4S2 MFVideoFormat_H264*/ MFVideoFormat_H264);
 		if (!SUCCEEDED(hr))
 		{
 			return hr;

@@ -80,12 +80,12 @@ namespace
 
 }
 
-SAV::EditableListView::EditableListView(HWND parent, const RECT& position, const OnSelectHandler& handler) :
+SAV::EditableListView::EditableListView(HWND parent, const RECT& position) :
 	m_handle(nullptr),
 	m_height(position.bottom - position.top),
 	m_width(position.right - position.left),
 	m_widthPercent(static_cast<float>(m_width) / 100.0f),
-	m_onSelectHandler(handler)
+	m_onSelectHandler(nullptr)
 {
 	m_handle = ::CreateWindow(
 		WC_LISTVIEW,
@@ -144,7 +144,7 @@ void SAV::EditableListView::showInplaceEditControl(int itemIndex, int subItemInd
 	SendMessage(inPlaceEditControl, EM_SETSEL, 0, 8);
 	SetFocus(inPlaceEditControl);
 
-	SetWindowSubclass(inPlaceEditControl, inPlaceEditSubclassProc, 0, 0);
+	SetWindowSubclass(inPlaceEditControl, inPlaceEditSubclassProc, 0, (DWORD_PTR)this);
 	SetProp(inPlaceEditControl, L"ITEM", (HANDLE)itemIndex);
 }
 
