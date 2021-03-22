@@ -19,6 +19,13 @@ namespace
 					editableListView->processSelectionChanged();
 					return result;
 				}
+
+				if (wParam == VK_DELETE)
+				{
+					auto* editableListView = (SAV::EditableListView*)dwRefData;
+					editableListView->removeItem();
+					return 0;
+				}
 		}
 		return ::DefSubclassProc(hwnd, message, wParam, lParam);
 	}
@@ -234,6 +241,15 @@ void SAV::EditableListView::processSelectionChanged()
 		int index = ListView_GetNextItem(m_handle, -1, LVNI_SELECTED);
 		auto data = getRowData(index);
 		m_onSelectHandler.operator()(data);
+	}
+}
+
+void SAV::EditableListView::removeItem()
+{
+	int index = ListView_GetNextItem(m_handle, -1, LVNI_SELECTED);
+	if (index != -1)
+	{
+		::SendMessage(m_handle, LVM_DELETEITEM, static_cast<WPARAM>(index), 0);
 	}
 }
 

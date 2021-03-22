@@ -40,6 +40,7 @@ namespace SAV
 		bool processNotify(WPARAM wp, LPARAM lp);
 
 		void processSelectionChanged();
+		void removeItem();
 
 		std::vector<std::vector<std::wstring>> getListViewData() const;
 
