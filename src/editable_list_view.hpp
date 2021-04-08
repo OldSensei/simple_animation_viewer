@@ -6,7 +6,7 @@
 #include <vector>
 #include <functional>
 #include <cstdint>
-
+#include <optional>
 
 namespace SAV
 {
@@ -39,8 +39,10 @@ namespace SAV
 		void updateData(const std::vector<std::vector<std::wstring>>& data);
 		bool processNotify(WPARAM wp, LPARAM lp);
 
+		int processContextMenu(LPARAM lParam);
 		void processSelectionChanged();
-		void removeItem();
+		void removeItem( const std::optional<int>& itemIndex = std::nullopt );
+		void copyItem( const std::optional<int>& itemIndex = std::nullopt );
 
 		std::vector<std::vector<std::wstring>> getListViewData() const;
 
@@ -53,6 +55,8 @@ namespace SAV
 		void addHeader(const HeaderDescription& description, int index);
 		void showInplaceEditControl(int itemIndex, int subItemIndex);
 		std::vector<std::wstring> getRowData(int index) const;
+
+		void insertItem(const std::vector<std::wstring>& itemData, int index);
 
 	private:
 		HWND m_handle;

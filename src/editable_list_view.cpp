@@ -4,13 +4,21 @@
 #include <array>
 #include <exception>
 
+#include "resource.h"
 #include "editable_list_view.hpp"
+
 namespace
 {
 	LRESULT CALLBACK listViewSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
 	{
 		switch (message)
 		{
+			case WM_CONTEXTMENU:
+				{
+					auto* editableListView = (SAV::EditableListView*)dwRefData;
+					return editableListView->processContextMenu(lParam);
+				}
+
 			case WM_KEYUP:
 				if (wParam == VK_UP || wParam == VK_DOWN)
 				{
@@ -157,29 +165,9 @@ void SAV::EditableListView::showInplaceEditControl(int itemIndex, int subItemInd
 
 void SAV::EditableListView::updateData(const std::vector<std::vector<std::wstring>>& data)
 {
-	LVITEM lvI;
-	lvI.mask = LVIF_TEXT | LVIF_STATE;
-	lvI.stateMask = 0;
-	lvI.state = 0;
-	lvI.cchTextMax = 256;
-	std::array<wchar_t, 256> buffer = { 0 };
 	for(int rowIndex = 0; rowIndex < data.size(); ++rowIndex)
 	{
-		std::copy(data[rowIndex][0].begin(), data[rowIndex][0].end(), buffer.begin());
-		buffer[data[rowIndex][0].length()] = 0;
-
-		lvI.iItem = rowIndex;
-		lvI.iSubItem = 0;
-		lvI.pszText = buffer.data();
-		ListView_InsertItem(m_handle, &lvI);
-		for(int columnIndex = 1; columnIndex < data[rowIndex].size(); ++columnIndex)
-		{
-			std::copy(data[rowIndex][columnIndex].begin(), data[rowIndex][columnIndex].end(), buffer.begin());
-			buffer[data[rowIndex][columnIndex].length()] = 0;
-			lvI.iSubItem = columnIndex;
-			lvI.pszText = buffer.data();
-			SendMessage(m_handle, LVM_SETITEM, 0, (LPARAM)(&lvI));
-		}
+		insertItem(data[rowIndex], rowIndex);
 	}
 }
 
@@ -234,6 +222,63 @@ std::vector<std::wstring> SAV::EditableListView::getRowData(int index) const
 	return data;
 }
 
+void SAV::EditableListView::insertItem(const std::vector<std::wstring>& itemData, int index)
+{
+	LVITEM lvI;
+	lvI.mask = LVIF_TEXT | LVIF_STATE;
+	lvI.stateMask = 0;
+	lvI.state = 0;
+	lvI.cchTextMax = 256;
+
+	std::array<wchar_t, 256> buffer = { 0 };
+	std::copy(itemData[0].begin(), itemData[0].end(), buffer.begin());
+	buffer[itemData[0].length()] = 0;
+
+	lvI.iItem = index;
+	lvI.iSubItem = 0;
+	lvI.pszText = buffer.data();
+	ListView_InsertItem(m_handle, &lvI);
+	for (int columnIndex = 1; columnIndex < itemData.size(); ++columnIndex)
+	{
+		std::copy(itemData[columnIndex].begin(), itemData[columnIndex].end(), buffer.begin());
+		buffer[itemData[columnIndex].length()] = 0;
+		lvI.iSubItem = columnIndex;
+		lvI.pszText = buffer.data();
+		SendMessage(m_handle, LVM_SETITEM, 0, (LPARAM)(&lvI));
+	}
+}
+
+int SAV::EditableListView::processContextMenu(LPARAM lParam)
+{
+	POINT p{LOWORD(lParam), HIWORD(lParam)};
+
+	HMENU contextMenu = LoadMenu(NULL, MAKEINTRESOURCE(IDR_ANIMATIONS_MENU));
+	auto menuTrackPopup = GetSubMenu(contextMenu, 0);
+
+	int index = ListView_GetNextItem(m_handle, -1, LVNI_SELECTED);
+	if (index < 0)
+	{
+		EnableMenuItem(menuTrackPopup, ID_DELETE_ITEM, MF_GRAYED);
+		EnableMenuItem(menuTrackPopup, ID_COPY_ITEM, MF_GRAYED);
+	}
+
+	int id = TrackPopupMenuEx(menuTrackPopup, TPM_RIGHTBUTTON | TPM_RETURNCMD, p.x, p.y, m_handle, nullptr);
+	switch (id)
+	{
+		case ID_DELETE_ITEM:
+			removeItem(index);
+			break;
+
+		case ID_COPY_ITEM:
+			copyItem(index);
+			break;
+	}
+
+
+	DestroyMenu(contextMenu);
+	return 0;
+}
+
 void SAV::EditableListView::processSelectionChanged()
 {
 	if (m_onSelectHandler)
@@ -244,12 +289,21 @@ void SAV::EditableListView::processSelectionChanged()
 	}
 }
 
-void SAV::EditableListView::removeItem()
+void SAV::EditableListView::removeItem(const std::optional<int>& itemIndex)
 {
-	int index = ListView_GetNextItem(m_handle, -1, LVNI_SELECTED);
+	int index = itemIndex.has_value() ? *itemIndex : ListView_GetNextItem(m_handle, -1, LVNI_SELECTED);
 	if (index != -1)
 	{
 		::SendMessage(m_handle, LVM_DELETEITEM, static_cast<WPARAM>(index), 0);
+	}
+}
+
+void SAV::EditableListView::copyItem(const std::optional<int>& itemIndex )
+{
+	int index = itemIndex.has_value() ? *itemIndex : ListView_GetNextItem(m_handle, -1, LVNI_SELECTED);
+	if (index >= 0)
+	{
+		insertItem(getRowData(index), index);
 	}
 }
 

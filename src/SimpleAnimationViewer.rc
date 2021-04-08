@@ -75,6 +75,16 @@ BEGIN
     END
 END
 
+IDR_ANIMATIONS_MENU MENU
+BEGIN
+    POPUP "FileListViewPopup"
+    BEGIN
+        MENUITEM "Set to all",                  ID_SETTOALL
+        MENUITEM "Copy",                        ID_COPY_ITEM
+        MENUITEM "Delete item",                 ID_DELETE_ITEM
+    END
+END
+
 #endif    // English (United States) resources
 /////////////////////////////////////////////////////////////////////////////
 
