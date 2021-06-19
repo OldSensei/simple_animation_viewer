@@ -1,8 +1,12 @@
 #include <Windows.h>
 #include <CommCtrl.h>
 
+#include <gdiplus.h>
+#include <gdiplusheaders.h>
+
 #include <array>
 #include <exception>
+#include <sstream>
 
 #include "resource.h"
 #include "editable_list_view.hpp"
@@ -100,7 +104,8 @@ SAV::EditableListView::EditableListView(HWND parent, const RECT& position) :
 	m_height(position.bottom - position.top),
 	m_width(position.right - position.left),
 	m_widthPercent(static_cast<float>(m_width) / 100.0f),
-	m_onSelectHandler(nullptr)
+	m_onSelectHandler(nullptr),
+	m_dragAndDropContext{ std::nullopt }
 {
 	m_handle = ::CreateWindow(
 		WC_LISTVIEW,
@@ -171,32 +176,46 @@ void SAV::EditableListView::updateData(const std::vector<std::vector<std::wstrin
 	}
 }
 
-bool SAV::EditableListView::processNotify(WPARAM wp, LPARAM lp)
+std::tuple<bool, int> SAV::EditableListView::processNotify(WPARAM wp, LPARAM lp)
 {
+	int returnedCode = 0;
 	auto* nmhdr = (LPNMHDR)lp;
 	if (nmhdr->hwndFrom != m_handle)
 	{
-		return false;
+		return { false, returnedCode };
 	}
-	auto code = nmhdr->code;
 
+	auto code = nmhdr->code;
 	switch (code)
 	{
 		case LVN_ITEMACTIVATE:
 		{
 			auto* itemActivate = (LPNMITEMACTIVATE)nmhdr;
 			showInplaceEditControl(itemActivate->iItem, 1);
-			return true;
+			return { true, returnedCode };
 		}
 
 		case NM_CLICK:
 		{
 			processSelectionChanged();
-			return true;
+			return {true, returnedCode };
+		}
+
+		case LVN_BEGINDRAG:
+		{
+			processBeginDragAndDrop(lp);
+			return {true, returnedCode };
+		}
+
+		case NM_CUSTOMDRAW:
+		{
+			auto listViewCustomDraw = reinterpret_cast<LPNMLVCUSTOMDRAW>(lp);
+			returnedCode = processCustomDraw(listViewCustomDraw);
+			return { true, returnedCode };
 		}
 	}
 
-	return false;
+	return {false, returnedCode};
 }
 
 std::vector<std::wstring> SAV::EditableListView::getRowData(int index) const
@@ -248,6 +267,47 @@ void SAV::EditableListView::insertItem(const std::vector<std::wstring>& itemData
 	}
 }
 
+SAV::EditableListView::DragAndDrop SAV::EditableListView::createDragAndDropContext(int index)
+{
+	::RECT itemRect;
+	ListView_GetSubItemRect(m_handle, index, 0, LVIR_LABEL, &itemRect);
+
+	const auto width = itemRect.right - itemRect.left;
+	const auto height = itemRect.bottom - itemRect.top;
+
+	auto hdc = ::GetDC(m_handle);
+	auto hdcMem = ::CreateCompatibleDC(hdc);
+	auto bitmap = ::CreateCompatibleBitmap(hdc, width, height);
+	auto oldBitmap = SelectObject(hdcMem, bitmap);
+
+	RECT r{ 0, 0, width, height };
+	::FillRect(hdcMem, &r, static_cast<HBRUSH>(GetStockObject(DKGRAY_BRUSH)));
+
+	auto data = getRowData(index);
+	COLORREF rgbWhite = 0x00FFFFFF;
+	COLORREF oldColor = ::SetTextColor(hdcMem, rgbWhite);
+	int oldBkMode = ::SetBkMode(hdcMem, TRANSPARENT);
+	::DrawText(hdcMem, data[0].c_str(), -1, &r,  DT_LEFT | DT_VCENTER);
+	::SetTextColor(hdcMem, oldColor);
+	::SetBkMode(hdcMem, oldBkMode);
+
+	auto imageList = ImageList_Create(width, height, ILC_COLOR32, 0, 0);
+
+	SelectObject(hdcMem, oldBitmap);
+	DeleteDC(hdcMem);
+
+	int bitmapIndex = ImageList_Add(imageList, bitmap, nullptr);
+	if (bitmapIndex == -1)
+	{
+		DeleteObject(bitmap);
+		ImageList_Destroy(imageList);
+		return std::nullopt;
+	}
+
+	DeleteObject(bitmap);
+	return DragAndDrop{ std::in_place, (HANDLE)imageList, width, height };
+}
+
 int SAV::EditableListView::processContextMenu(LPARAM lParam)
 {
 	POINT p{LOWORD(lParam), HIWORD(lParam)};
@@ -260,6 +320,7 @@ int SAV::EditableListView::processContextMenu(LPARAM lParam)
 	{
 		EnableMenuItem(menuTrackPopup, ID_DELETE_ITEM, MF_GRAYED);
 		EnableMenuItem(menuTrackPopup, ID_COPY_ITEM, MF_GRAYED);
+		EnableMenuItem(menuTrackPopup, ID_SETTOALL, MF_GRAYED);
 	}
 
 	int id = TrackPopupMenuEx(menuTrackPopup, TPM_RIGHTBUTTON | TPM_RETURNCMD, p.x, p.y, m_handle, nullptr);
@@ -272,8 +333,11 @@ int SAV::EditableListView::processContextMenu(LPARAM lParam)
 		case ID_COPY_ITEM:
 			copyItem(index);
 			break;
-	}
 
+		case ID_SETTOALL:
+			setValueToAllItem(index);
+			break;
+	}
 
 	DestroyMenu(contextMenu);
 	return 0;
@@ -287,6 +351,94 @@ void SAV::EditableListView::processSelectionChanged()
 		auto data = getRowData(index);
 		m_onSelectHandler.operator()(data);
 	}
+}
+
+void SAV::EditableListView::processBeginDragAndDrop(LPARAM lParam)
+{
+	int index = ListView_GetNextItem(m_handle, -1, LVNI_SELECTED);
+	if (index < 0)
+	{
+		m_dragAndDropContext = std::nullopt;
+		return;
+	}
+
+	auto pt = reinterpret_cast<NM_LISTVIEW*>(lParam)->ptAction;
+	ClientToScreen(m_handle, &pt);
+
+	m_dragAndDropContext = createDragAndDropContext(index);
+	auto hwnd = ::GetAncestor(m_handle, GA_PARENT);
+	::SetCapture(hwnd);
+}
+
+bool SAV::EditableListView::processMouseMoving(LPARAM lParam)
+{
+	if (!m_dragAndDropContext)
+	{
+		return false;
+	}
+
+	::POINT p{ 0, 0 };
+	p.x = LOWORD(lParam);
+	p.y = HIWORD(lParam);
+
+	auto hwnd = ::GetAncestor(m_handle, GA_PARENT);
+	ClientToScreen(hwnd, &p);
+
+	// get rect for item which mouse covered
+	LVHITTESTINFO lvhti = { 0 };
+	lvhti.pt.x = p.x;
+	lvhti.pt.y = p.y;
+	ScreenToClient(m_handle, &lvhti.pt);
+	ListView_HitTest(m_handle, &lvhti);
+	m_dragAndDropContext->mouse = lvhti.pt;
+
+	if (lvhti.iItem != -1)
+	{
+		m_dragAndDropContext->hotItemIndex = lvhti.iItem;
+		InvalidateRect(m_handle, nullptr, false);
+	}
+
+	return true;
+}
+
+void SAV::EditableListView::processEndDragAndDrop(LPARAM lParam)
+{
+	if (!m_dragAndDropContext)
+	{
+		return;
+	}
+
+	m_dragAndDropContext.reset();
+
+	ReleaseCapture();
+
+	LVHITTESTINFO lvhti = { 0 };
+	lvhti.pt.x = LOWORD(lParam);
+	lvhti.pt.y = HIWORD(lParam);
+
+	auto hwnd = ::GetAncestor(m_handle, GA_PARENT);
+
+	ClientToScreen(hwnd, &lvhti.pt);
+	ScreenToClient(m_handle, &lvhti.pt);
+
+	ListView_HitTest(m_handle, &lvhti);
+	if (lvhti.iItem == -1)
+	{
+		return;
+	}
+
+	int index = ListView_GetNextItem(m_handle, -1, LVNI_SELECTED);
+
+	if (index != -1 && index == lvhti.iItem)
+	{
+		return;
+	}
+
+	auto draggedData = getRowData(index);
+	removeItem(index);
+	insertItem(draggedData, lvhti.iItem);
+
+	InvalidateRect(m_handle, nullptr, false);
 }
 
 void SAV::EditableListView::removeItem(const std::optional<int>& itemIndex)
@@ -307,6 +459,28 @@ void SAV::EditableListView::copyItem(const std::optional<int>& itemIndex )
 	}
 }
 
+void SAV::EditableListView::setValueToAllItem(const std::optional<int>& itemIndex)
+{
+	int index = itemIndex.has_value() ? *itemIndex : ListView_GetNextItem(m_handle, -1, LVNI_SELECTED);
+	if (index >= 0)
+	{
+		auto data = getRowData(index);
+		auto& value = data[1];
+		auto itemCount = ListView_GetItemCount(m_handle);
+		for (int i = 0; i < itemCount; ++i)
+		{
+			if (i != index)
+			{
+				LVITEM lvItem;
+				lvItem.iItem = i;
+				lvItem.iSubItem = 1;
+				lvItem.pszText = value.data();
+				SendMessage(m_handle, LVM_SETITEMTEXT, (WPARAM)lvItem.iItem, (LPARAM)&lvItem);
+			}
+		}
+	}
+}
+
 std::vector<std::vector<std::wstring>> SAV::EditableListView::getListViewData() const
 {
 	std::vector<std::vector<std::wstring>> result;
@@ -317,4 +491,43 @@ std::vector<std::vector<std::wstring>> SAV::EditableListView::getListViewData() 
 	}
 
 	return result;
+}
+
+int SAV::EditableListView::processCustomDraw(LPNMLVCUSTOMDRAW listViewCustomDraw)
+{
+	switch (listViewCustomDraw->nmcd.dwDrawStage)
+	{
+		case CDDS_PREPAINT:
+			return m_dragAndDropContext ? (CDRF_NOTIFYPOSTPAINT | CDRF_NOTIFYITEMDRAW) : CDRF_DODEFAULT;
+
+		case CDDS_ITEMPREPAINT:
+			return processPrePaint(listViewCustomDraw);
+
+		case CDDS_POSTPAINT:
+			return processPostPaint();
+	}
+}
+
+int SAV::EditableListView::processPrePaint(LPNMLVCUSTOMDRAW listViewCustomDraw)
+{
+	if (m_dragAndDropContext->hotItemIndex != -1 && listViewCustomDraw->nmcd.dwItemSpec == m_dragAndDropContext->hotItemIndex)
+	{
+		listViewCustomDraw->clrTextBk = RGB(255, 0, 0);
+		return CDRF_NEWFONT;
+	}
+
+	return CDRF_DODEFAULT;
+}
+
+int SAV::EditableListView::processPostPaint()
+{
+	if (m_dragAndDropContext)
+	{
+		ImageList_Draw(m_dragAndDropContext->getImageList(), 0,
+						GetDC(m_handle),
+						m_dragAndDropContext->mouse.x, m_dragAndDropContext->mouse.y,
+						ILD_BLEND);
+	}
+	
+	return CDRF_DODEFAULT;
 }

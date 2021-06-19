@@ -91,10 +91,6 @@ namespace
 		auto data = appState.appHandles.nfileList->getListViewData();
 		for (const auto& row : data)
 		{
-			if (auto filepath = appState.animationData.getAnimationFilePath(row[0]); filepath)
-			{
-
-			}
 			const auto& name = row[0];
 			const auto& timerString = row[1];
 
@@ -217,23 +213,34 @@ namespace
 			switch (msg)
 			{
 				case WM_NOTIFY:
-					if (appState->appHandles.nfileList)
+				{
+					auto [isProcessed, returnedCode] = appState->appHandles.nfileList->processNotify(wp, lp);
+					if (isProcessed)
 					{
-						if (appState->appHandles.nfileList->processNotify(wp, lp))
-						{
-							return 1;
-						}
+						return returnedCode;
 					}
 					break;
+				}
 
 				case WM_COMMAND:
 					processChild(wp, *appState);
-					return 1;
+					return 0;
+
+				case WM_MOUSEMOVE:
+					if (appState->appHandles.nfileList->processMouseMoving(lp))
+					{
+						return 0;
+					}
+					break;
+
+				case WM_LBUTTONUP:
+					appState->appHandles.nfileList->processEndDragAndDrop(lp);
+					break;
 
 				case WM_DESTROY:
 					PostQuitMessage(0);
 					appState->isExit = true;
-					return 1;
+					return 0;
 			}
 		}
 		return DefWindowProc(hwnd, msg, wp, lp);
