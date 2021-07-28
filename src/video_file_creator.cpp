@@ -7,13 +7,15 @@
 
 namespace SAV
 {
-	VideoFileCreator::VideoFileCreator(std::uint32_t width, std::uint32_t height, std::uint32_t bitrate) :
+	VideoFileCreator::VideoFileCreator(std::wstring_view filename, std::uint32_t width, std::uint32_t height, std::uint32_t bitrate) :
         m_width{width},
         m_height{height},
         m_bitrate{bitrate},
         m_fps{30},
+        m_filename{filename},
         m_frameDuration{ 1000.0f / m_fps },
-        m_frameTimestamp{0}
+        m_frameTimestamp{0},
+        m_isCanceled{ false }
     {
 		auto hr = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 		if (!SUCCEEDED(hr))
@@ -32,7 +34,7 @@ namespace SAV
 		hr = initializeSinkWriter();
 	}
 
-    HRESULT VideoFileCreator::write(const std::vector<AnimationDescription>& data)
+    HRESULT VideoFileCreator::write(const std::vector<AnimationDescription>& data, std::function<void()> progressCallback)
     {
         std::unique_ptr<Gdiplus::Bitmap> videoFrameBitmap{ new Gdiplus::Bitmap(m_width, m_height) };
         std::unique_ptr<Gdiplus::Graphics> frameGraphics{ new Gdiplus::Graphics(videoFrameBitmap.get()) };
@@ -48,10 +50,16 @@ namespace SAV
             for (std::uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex)
             {
                 hr = writeFrame(videoFrameBitmap, static_cast<std::uint32_t>(m_frameDuration * 10000));
-                if (!SUCCEEDED(hr))
+                if (!SUCCEEDED(hr) || m_isCanceled)
                 {
+                    m_isCanceled = false;
                     return hr;
                 }
+            }
+
+            if (progressCallback)
+            {
+                progressCallback();
             }
         }
 
@@ -80,7 +88,7 @@ namespace SAV
 			return hr;
 		}
 
-		hr = MFCreateSinkWriterFromURL(L"output.mp4", NULL, attributes.get(), m_sinkWriter.put());
+		hr = MFCreateSinkWriterFromURL(m_filename.c_str(), NULL, attributes.get(), m_sinkWriter.put());
 		if (!SUCCEEDED(hr))
 		{
 			return hr;

@@ -6,12 +6,12 @@
 
 namespace
 {
-	const std::array<COMDLG_FILTERSPEC, 1> gSaveFileFilter = { {L"Simple Animation Viwer data (*.sav)", L"*.sav"} };
+
 }
 
 namespace SAV
 {
-	std::optional<std::wstring> saveFileDialog()
+	std::optional<std::wstring> saveFileDialog( const SaveFileData& options )
 	{
 		std::optional<std::wstring> result = std::nullopt;
 		if (SUCCEEDED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)))
@@ -19,11 +19,11 @@ namespace SAV
 			IFileDialog* saveFileDialog;
 			if (SUCCEEDED(CoCreateInstance(CLSID_FileSaveDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&saveFileDialog))))
 			{
-				if (SUCCEEDED(saveFileDialog->SetFileTypes(gSaveFileFilter.size(), gSaveFileFilter.data())))
+				if (SUCCEEDED(saveFileDialog->SetFileTypes(options.filter.size(), options.filter.data())))
 				{
 					if (SUCCEEDED(saveFileDialog->SetFileTypeIndex(0)))
 					{
-						if (SUCCEEDED(saveFileDialog->SetDefaultExtension(L"sav")))
+						if (SUCCEEDED(saveFileDialog->SetDefaultExtension(options.extension.data())))
 						{
 							DWORD options;
 							if (SUCCEEDED(saveFileDialog->GetOptions(&options)))
@@ -54,7 +54,7 @@ namespace SAV
 		return result;
 	}
 
-	std::optional<std::wstring> loadFileDialog()
+	std::optional<std::wstring> loadFileDialog( const SaveFileData& options )
 	{
 		std::optional<std::wstring> result = std::nullopt;
 		if (SUCCEEDED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)))
@@ -62,7 +62,7 @@ namespace SAV
 			IFileDialog* openDialog;
 			if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&openDialog))))
 			{
-				if (SUCCEEDED(openDialog->SetFileTypes(gSaveFileFilter.size(), gSaveFileFilter.data())))
+				if (SUCCEEDED(openDialog->SetFileTypes(options.filter.size(), options.filter.data())))
 				{
 					if (SUCCEEDED(openDialog->SetFileTypeIndex(0)))
 					{

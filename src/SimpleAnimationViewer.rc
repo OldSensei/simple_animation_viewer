@@ -85,6 +85,64 @@ BEGIN
     END
 END
 
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Dialog
+//
+
+IDD_SAVE_VIDEO_DIALOG DIALOGEX 0, 0, 177, 141
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Save video dialog"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    DEFPUSHBUTTON   "Start",ID_START,17,120,58,14
+    EDITTEXT        IDC_H_EDIT,103,41,53,14,ES_AUTOHSCROLL
+    LTEXT           "W:",IDC_W,21,43,10,8
+    LTEXT           "H:",IDC_H,94,44,8,8
+    GROUPBOX        "Size",IDC_SIZE_GROUP,15,33,145,27
+    EDITTEXT        IDC_W_EDIT,33,41,52,14,ES_AUTOHSCROLL
+    LTEXT           "File name:",IDC_FILE_NAME,14,7,34,8
+    EDITTEXT        IDC_FILE_NAME_EDIT,16,15,97,14,ES_AUTOHSCROLL
+    LTEXT           "Bitrate:",IDC_BITRATE,15,67,25,8
+    EDITTEXT        IDC_BITRATE_EDIT,47,64,113,14,ES_AUTOHSCROLL
+    LTEXT           "Total time:",IDC_VIDEO_LONG,16,87,35,8
+    LTEXT           "",IDC_TOTAL_TIME,61,87,8,8
+    CONTROL         "",IDC_CREATION_PROGRESS,"msctls_progress32",WS_BORDER,16,100,144,14
+    PUSHBUTTON      "Cancel",ID_CANCEL,109,120,50,14
+    PUSHBUTTON      "Select",ID_SELECT,125,15,33,14
+END
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// DESIGNINFO
+//
+
+#ifdef APSTUDIO_INVOKED
+GUIDELINES DESIGNINFO
+BEGIN
+    IDD_SAVE_VIDEO_DIALOG, DIALOG
+    BEGIN
+        LEFTMARGIN, 7
+        RIGHTMARGIN, 170
+        TOPMARGIN, 7
+        BOTTOMMARGIN, 134
+    END
+END
+#endif    // APSTUDIO_INVOKED
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// AFX_DIALOG_LAYOUT
+//
+
+IDD_SAVE_VIDEO_DIALOG AFX_DIALOG_LAYOUT
+BEGIN
+    0
+END
+
 #endif    // English (United States) resources
 /////////////////////////////////////////////////////////////////////////////
 

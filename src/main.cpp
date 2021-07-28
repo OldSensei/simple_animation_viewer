@@ -8,6 +8,7 @@
 #include <charconv>
 #include <vector>
 #include <filesystem>
+#include <future>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -35,10 +36,16 @@ namespace
 	constexpr std::uint64_t IDC_PLAY = 0x5;
 	constexpr std::uint64_t IDC_STOP = 0x6;
 
+	constexpr std::wstring_view APP_STATE_PROP = L"AppState";
+
 	struct ApplicationState
 	{
 		SAV::AnimationData animationData;
 		bool isExit = false;
+		std::mutex vfc_mutex;
+		std::unique_ptr<SAV::VideoFileCreator> vfc;
+		std::optional<std::future<HRESULT>> conversionTask; 
+
 		struct
 		{
 			HWND appHandle = nullptr;
@@ -56,8 +63,7 @@ namespace
 		::RECT windowRect;
 	};
 
-
-	std::optional<std::chrono::milliseconds> fromWstring(const std::wstring& data)
+	std::optional<std::uint64_t> fromWstring(const std::wstring& data)
 	{
 		std::uint64_t value = 0;
 		char buf[10] = { 0 };
@@ -66,7 +72,17 @@ namespace
 		auto result = std::from_chars(buf, buf + len, value);
 		if (result.ec == std::errc())
 		{
-			return std::optional<std::chrono::milliseconds>(std::chrono::milliseconds(value));
+			return std::optional<std::uint64_t>(value);
+		}
+		return std::nullopt;
+	}
+
+	std::optional<std::chrono::milliseconds> msFromWstring(const std::wstring& data)
+	{
+		auto ms = fromWstring(data);
+		if (ms)
+		{
+			return std::optional<std::chrono::milliseconds>(ms);
 		}
 		return std::nullopt;
 	}
@@ -85,6 +101,127 @@ namespace
 		return true;
 	}
 
+	HRESULT doVideoConversion(const std::wstring& filename, std::uint32_t width, std::uint32_t height, ApplicationState* appState, HWND dlg)
+	{
+		auto data = appState->appHandles.nfileList->getListViewData();
+		std::vector<SAV::AnimationDescription> videoData;
+		for (const auto& row : data)
+		{
+			auto filepath = appState->animationData.getAnimationFilePath(row[0]);
+			if (filepath)
+			{
+				videoData.push_back(SAV::AnimationDescription{ filepath->wstring(), row[1] });
+			}
+		}
+
+		auto progressHWND = GetDlgItem(dlg, IDC_CREATION_PROGRESS);
+		SendMessage(progressHWND, PBM_SETRANGE, 0, MAKELPARAM(0, videoData.size()));
+		SendMessage(progressHWND, PBM_SETSTEP, (WPARAM)1, 0);
+		
+		std::unique_lock vfcLock(appState->vfc_mutex, std::defer_lock);
+
+		vfcLock.lock();
+		//L"output.mp4"
+		appState->vfc = std::make_unique<SAV::VideoFileCreator>(filename, width, height, 14000000);
+		vfcLock.unlock();
+
+		auto result = appState->vfc->write(videoData,
+								[progressHWND]()
+								{
+									PostMessage(progressHWND, PBM_STEPIT, 0, 0);
+								});
+
+		vfcLock.lock();
+		appState->vfc.reset();
+		vfcLock.unlock();
+
+		PostMessage(dlg, WM_USER + 1, 0, 0);
+
+		return result;
+	}
+
+	void makeVideo(HWND dlgHWND, ApplicationState& appState)
+	{
+		std::array<wchar_t, MAX_PATH> buffer = { 0 };
+
+		GetDlgItemText(dlgHWND, IDC_W_EDIT, buffer.data(), buffer.size());
+		auto width = fromWstring(buffer.data());
+		GetDlgItemText(dlgHWND, IDC_H_EDIT, buffer.data(), buffer.size());
+		auto height = fromWstring(buffer.data());
+		GetDlgItemText(dlgHWND, IDC_FILE_NAME_EDIT, buffer.data(), buffer.size());
+		auto filename = std::wstring(buffer.data());
+
+		if (width && height)
+		{
+			appState.conversionTask.emplace( std::async( std::launch::async, doVideoConversion,
+				filename,
+				static_cast<std::uint32_t>(*width), static_cast<std::uint32_t>(*height),
+				&appState, dlgHWND ) );
+		}
+	}
+
+	void initDefaultVideoDlgOptions()
+	{
+
+	}
+
+	bool processSaveVideoDlgCommand(WORD commandID, HWND dlgBoxhwnd, ApplicationState& appState)
+	{
+		switch(commandID)
+		{
+			case ID_START:
+				makeVideo(dlgBoxhwnd, appState);
+				return true;
+
+			case ID_CANCEL:
+				return true;
+
+			case ID_SELECT:
+			{
+				auto filepath = SAV::saveFileDialog(SAV::program_save_video);
+				if (filepath)
+				{
+					SetDlgItemText(dlgBoxhwnd, IDC_FILE_NAME_EDIT, filepath->c_str());
+				}
+			}
+			return true;
+
+			default:
+				return false;
+		}
+
+		return false;
+	}
+
+	INT_PTR CALLBACK SaveVideoDlgProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+	{
+		static ApplicationState* appState = nullptr;
+
+		switch (message)
+		{
+			case WM_INITDIALOG:
+				appState = reinterpret_cast<ApplicationState*>(lParam);
+			return TRUE;
+
+			case WM_COMMAND:
+			{
+				if (!processSaveVideoDlgCommand(LOWORD(wParam), hwnd, *appState))
+				{
+					return FALSE;
+				}
+			}
+			return TRUE;
+
+			case WM_USER+1:
+				EndDialog(hwnd, appState->conversionTask->get() == S_OK ? 0 : 1);
+				return TRUE;
+
+			default:
+				return FALSE;
+		}
+		return TRUE;
+	}
+
 	bool processPlayButton(ApplicationState& appState)
 	{
 		appState.appHandles.timeline->reset();
@@ -94,7 +231,7 @@ namespace
 			const auto& name = row[0];
 			const auto& timerString = row[1];
 
-			auto value = fromWstring(timerString);
+			auto value = msFromWstring(timerString);
 			if (value)
 			{
 				appState.appHandles.timeline->add(name, *value);
@@ -142,42 +279,16 @@ namespace
 
 		if (LOWORD(wp) == ID_IMAGES_WRITEVIDEO)
 		{
-			if (appState.appHandles.nfileList)
-			{
-				auto data = appState.appHandles.nfileList->getListViewData();
-				std::vector<SAV::AnimationDescription> videoData;
-
-				for(const auto& row : data)
-				{
-					auto filepath = appState.animationData.getAnimationFilePath(row[0]);
-					if (filepath)
-					{
-						videoData.push_back( SAV::AnimationDescription{ filepath->wstring(), row[1] } );
-					}
-				}
-
-				// hack: added reverse order
-				//for (auto it = data.rbegin(); it != data.rend(); it++)
-				//{
-				//	auto& row = *it;
-				//	auto durationValue = fromWstring(row[1]);
-				//	auto f_it = std::find_if(gAppData.imageData.begin(), gAppData.imageData.end(),
-				//		[name = row[0]](const auto& imgData) { return name == imgData.name; });
-				//
-				//	if (f_it != gAppData.imageData.end() && durationValue)
-				//	{
-				//		videoData.push_back(std::pair<std::filesystem::path, std::chrono::milliseconds>{f_it->path, * durationValue});
-				//	}
-				//}
-				SAV::VideoFileCreator vfc{ 1920, 1080, 14000000 };
-				vfc.write(videoData);
-			}
+			DialogBoxParam(nullptr,
+							MAKEINTRESOURCE(IDD_SAVE_VIDEO_DIALOG),
+							appState.appHandles.appHandle,
+							SaveVideoDlgProc, reinterpret_cast<LPARAM>(&appState));
 			return true;
 		}
 
 		if (LOWORD(wp) == ID_PROGRAMM_SAVE)
 		{
-			auto filepath = SAV::saveFileDialog();
+			auto filepath = SAV::saveFileDialog(SAV::program_save_data);
 			if (filepath)
 			{
 				auto data = appState.appHandles.nfileList->getListViewData();
@@ -188,7 +299,7 @@ namespace
 
 		if (LOWORD(wp) == ID_PROGRAMM_LOAD)
 		{
-			auto filepath = SAV::loadFileDialog();
+			auto filepath = SAV::loadFileDialog(SAV::program_save_data);
 			if (filepath)
 			{
 				auto&& animations = appState.animationData.loadFromFile(*filepath);
