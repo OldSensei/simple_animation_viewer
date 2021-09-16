@@ -22,9 +22,8 @@ namespace SAV
 
 		void add(const std::wstring& frameName, std::chrono::milliseconds interval);
 		void setLooped(bool value) { m_isLooped = value; }
-		void play(bool isLooped, bool isReverInEnd);
+		void play(bool isLooped);
 		bool advance();
-		void addInvertFrames();
 		void reset();
 		bool hasTimer(WPARAM timerID) const { return timerID == m_animationTimer; }
 

@@ -78,10 +78,6 @@ namespace SAV
 	void TimeLine::play(bool isLooped, bool isReverInEnd)
 	{
 		m_isLooped = isLooped;
-		if (isReverInEnd)
-		{
-			addInvertFrames();
-		}
 		m_current = 0;
 		advance();
 	}

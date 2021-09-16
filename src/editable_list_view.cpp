@@ -123,7 +123,7 @@ SAV::EditableListView::EditableListView(HWND parent, const RECT& position) :
 		throw std::exception("Can't create list view");
 	}
 
-	ListView_SetExtendedListViewStyle(m_handle, LVS_EX_FULLROWSELECT);
+	ListView_SetExtendedListViewStyle(m_handle, LVS_EX_FULLROWSELECT | LVS_EX_AUTOSIZECOLUMNS);
 
 	SetWindowSubclass(m_handle, listViewSubclassProc, 1, (DWORD_PTR)this);
 }
@@ -491,6 +491,14 @@ std::vector<std::vector<std::wstring>> SAV::EditableListView::getListViewData() 
 	}
 
 	return result;
+}
+
+void SAV::EditableListView::onResize(const ::RECT& position)
+{
+	::SetWindowPos(m_handle, HWND_TOP, position.left, position.top,
+		position.right - position.left,
+		position.bottom - position.top,
+		SWP_NOZORDER);
 }
 
 int SAV::EditableListView::processCustomDraw(LPNMLVCUSTOMDRAW listViewCustomDraw)

@@ -71,4 +71,11 @@ namespace SAV
 		m_graphics->DrawImage(image, 0, 0, m_width, m_height);
 	}
 
+	void ImageCachableCanvas::onResize(const RECT& position)
+	{
+		::SetWindowPos(m_handle, HWND_TOP, position.left, position.top,
+			position.right - position.left,
+			position.bottom - position.top,
+			SWP_NOZORDER);
+	}
 }

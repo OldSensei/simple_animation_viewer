@@ -56,6 +56,7 @@ namespace SAV
 			m_onSelectHandler = handler;
 		}
 
+		void onResize(const ::RECT& position);
 	private:
 		struct DragAndDropContext
 		{
@@ -101,7 +102,7 @@ namespace SAV
 			DragAndDropContext& operator=(const DragAndDropContext& context) = delete;
 
 			HANDLE dragImageList;
-			POINT mouse;
+			POINT mouse = {0,0};
 			int hotItemIndex;
 			int imageWidth;
 			int imageHeight;

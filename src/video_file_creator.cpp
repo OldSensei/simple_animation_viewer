@@ -106,7 +106,7 @@ namespace SAV
 			return hr;
 		}
 
-        hr = mediaTypeOut->SetGUID(MF_MT_SUBTYPE, /*MFVideoFormat_WMV3); MFVideoFormat_M4S2 MFVideoFormat_H264*/ MFVideoFormat_H264);
+        hr = mediaTypeOut->SetGUID(MF_MT_SUBTYPE, /*MFVideoFormat_WMV3); MFVideoFormat_M4S2 */ MFVideoFormat_H264);
 		if (!SUCCEEDED(hr))
 		{
 			return hr;

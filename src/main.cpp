@@ -18,9 +18,14 @@
 #include "dialogs.hpp"
 #include "editable_list_view.hpp"
 #include "image_cachable_canvas.hpp"
+#include "layout.hpp"
 #include "program_data.hpp"
 #include "time_line.hpp"
 #include "video_file_creator.hpp"
+#include "utils.hpp"
+
+#pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
+processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 #pragma comment (lib,"Gdiplus.lib")
 #pragma comment (lib,"Comctl32.lib")
@@ -32,11 +37,28 @@ namespace
 
 	constexpr std::uint64_t IDC_TIMER_EDIT = 0x2;
 	constexpr std::uint64_t IDC_LOOP_BOX = 0x3;
-	constexpr std::uint64_t IDC_INVERSE_END_BOX = 0x4;
 	constexpr std::uint64_t IDC_PLAY = 0x5;
-	constexpr std::uint64_t IDC_STOP = 0x6;
 
 	constexpr std::wstring_view APP_STATE_PROP = L"AppState";
+	constexpr std::uint32_t WM_CONVERSION_FINISHED = WM_USER + 1;
+
+	constexpr std::wstring_view DEFAULT_VIDEO_WIDTH_TXT_VALUE = L"1920";
+	constexpr std::wstring_view DEFAULT_VIDEO_HEIGHT_TXT_VALUE = L"1080";
+	constexpr std::wstring_view DEFAULT_VIDEO_BITRATE_TXT_VALUE = L"8000";
+	constexpr std::wstring_view DEFAULT_VIDEO_FILENAME_VALUE = L"output.mp4";
+
+	constexpr std::string_view LAYOUT_ROOT_NAME = "Root";
+	constexpr std::string_view LAYOUT_IMAGE_CANVAS_NAME = "ImageCanvas";
+	constexpr std::string_view LAYOUT_TIME_LINE_NAME = "TimeLine";
+	constexpr std::string_view LAYOUT_PLAY_BUTTON_NAME = "PlayButton";
+
+	struct VideoConversionOptions
+	{
+		std::uint32_t width;
+		std::uint32_t height;
+		SAV::Bitrate bitrate;
+		std::wstring filename;
+	};
 
 	struct ApplicationState
 	{
@@ -45,41 +67,23 @@ namespace
 		std::mutex vfc_mutex;
 		std::unique_ptr<SAV::VideoFileCreator> vfc;
 		std::optional<std::future<HRESULT>> conversionTask; 
+		std::optional<SAV::Layout::BoxLayout> layout;
 
 		struct
 		{
 			HWND appHandle = nullptr;
-			HWND canvas = nullptr;
 			HWND playButton = nullptr;
-			HWND stopButton = nullptr;
 			HWND loopBox = nullptr;
-			HWND invEndBox = nullptr;
 			HWND timerEdit = nullptr;
 			std::optional<SAV::EditableListView> nfileList;
 			std::optional<SAV::ImageCachableCanvas> imageCanvas;
 			std::optional<SAV::TimeLine> timeline;
 		} appHandles;
-
-		::RECT windowRect;
 	};
-
-	std::optional<std::uint64_t> fromWstring(const std::wstring& data)
-	{
-		std::uint64_t value = 0;
-		char buf[10] = { 0 };
-
-		int len = WideCharToMultiByte(CP_UTF8, 0, data.c_str(), static_cast<int>(data.length()), buf, 10, nullptr, nullptr);
-		auto result = std::from_chars(buf, buf + len, value);
-		if (result.ec == std::errc())
-		{
-			return std::optional<std::uint64_t>(value);
-		}
-		return std::nullopt;
-	}
 
 	std::optional<std::chrono::milliseconds> msFromWstring(const std::wstring& data)
 	{
-		auto ms = fromWstring(data);
+		auto ms = SAV::Utils::fromString(data);
 		if (ms)
 		{
 			return std::optional<std::chrono::milliseconds>(ms);
@@ -101,7 +105,7 @@ namespace
 		return true;
 	}
 
-	HRESULT doVideoConversion(const std::wstring& filename, std::uint32_t width, std::uint32_t height, ApplicationState* appState, HWND dlg)
+	HRESULT doVideoConversion(const VideoConversionOptions& options, ApplicationState* appState, HWND dlg)
 	{
 		auto data = appState->appHandles.nfileList->getListViewData();
 		std::vector<SAV::AnimationDescription> videoData;
@@ -119,10 +123,8 @@ namespace
 		SendMessage(progressHWND, PBM_SETSTEP, (WPARAM)1, 0);
 		
 		std::unique_lock vfcLock(appState->vfc_mutex, std::defer_lock);
-
 		vfcLock.lock();
-		//L"output.mp4"
-		appState->vfc = std::make_unique<SAV::VideoFileCreator>(filename, width, height, 14000000);
+		appState->vfc = std::make_unique<SAV::VideoFileCreator>(options.filename, options.width, options.height, options.bitrate);
 		vfcLock.unlock();
 
 		auto result = appState->vfc->write(videoData,
@@ -135,34 +137,90 @@ namespace
 		appState->vfc.reset();
 		vfcLock.unlock();
 
-		PostMessage(dlg, WM_USER + 1, 0, 0);
+		::Sleep(1000);
+		PostMessage(dlg, WM_CONVERSION_FINISHED, 0, 0);
 
 		return result;
 	}
 
+	template<typename T>
+	std::optional<T> getValueFromDlgItem(HWND dlgHWND, int dialogItemId)
+	{
+#ifdef UNICODE
+		using SymbolType = wchar_t;
+#else
+		using SymbolType = char;
+#endif // UNICODE
+		std::array<SymbolType, MAX_PATH> buffer = { 0 };
+		GetDlgItemText(dlgHWND, dialogItemId, buffer.data(), static_cast<int>(buffer.size()));
+
+		if constexpr (std::is_integral_v<T>)
+		{
+			if (auto value = SAV::Utils::fromString<std::wstring>(buffer.data()); value)
+			{
+				return std::optional{ static_cast<T>(*value) };
+			}
+		}
+		else
+		{
+			return std::optional{ T{ buffer.data() } };
+		}
+
+		return std::nullopt;
+	}
+
 	void makeVideo(HWND dlgHWND, ApplicationState& appState)
 	{
-		std::array<wchar_t, MAX_PATH> buffer = { 0 };
+		auto width = getValueFromDlgItem<std::uint32_t>(dlgHWND, IDC_W_EDIT);
+		auto height = getValueFromDlgItem<std::uint32_t>(dlgHWND, IDC_H_EDIT);
+		auto bitrate = getValueFromDlgItem<std::uint32_t>(dlgHWND, IDC_BITRATE_EDIT);
+		auto filename = getValueFromDlgItem<std::wstring>(dlgHWND, IDC_FILE_NAME_EDIT);
 
-		GetDlgItemText(dlgHWND, IDC_W_EDIT, buffer.data(), buffer.size());
-		auto width = fromWstring(buffer.data());
-		GetDlgItemText(dlgHWND, IDC_H_EDIT, buffer.data(), buffer.size());
-		auto height = fromWstring(buffer.data());
-		GetDlgItemText(dlgHWND, IDC_FILE_NAME_EDIT, buffer.data(), buffer.size());
-		auto filename = std::wstring(buffer.data());
-
-		if (width && height)
+		if (width && height && bitrate && filename && !filename->empty())
 		{
 			appState.conversionTask.emplace( std::async( std::launch::async, doVideoConversion,
-				filename,
-				static_cast<std::uint32_t>(*width), static_cast<std::uint32_t>(*height),
+				VideoConversionOptions{ *width, *height, SAV::Bitrate{*bitrate, SAV::Bitrate::KBPS()}, *filename },
 				&appState, dlgHWND ) );
 		}
 	}
 
-	void initDefaultVideoDlgOptions()
+	void cancelVideo(HWND dlgHWND, ApplicationState& appState)
 	{
+		if (appState.conversionTask)
+		{
+			std::lock_guard guard(appState.vfc_mutex);
+			if (appState.vfc)
+			{
+				appState.vfc->cancel();
+			}
+		}
+		else
+		{
+			PostMessage(dlgHWND, WM_CONVERSION_FINISHED, 0, 0);
+		}
+	}
 
+	void initVideoDlg(HWND dlgHWND, ApplicationState& appState)
+	{
+		auto menu = ::GetSystemMenu(dlgHWND, FALSE);
+		if (menu)
+		{
+			EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | MF_GRAYED | MF_DISABLED);
+		}
+
+		SetDlgItemText(dlgHWND, IDC_W_EDIT, DEFAULT_VIDEO_WIDTH_TXT_VALUE.data());
+		SetDlgItemText(dlgHWND, IDC_H_EDIT, DEFAULT_VIDEO_HEIGHT_TXT_VALUE.data());
+		SetDlgItemText(dlgHWND, IDC_BITRATE_EDIT, DEFAULT_VIDEO_BITRATE_TXT_VALUE.data());
+
+		std::array<wchar_t, MAX_PATH> buffer = { 0 };
+		auto count = GetCurrentDirectory(static_cast<DWORD>(buffer.max_size()), buffer.data());
+		if (count > 0)
+		{
+			std::wstring filepath{ buffer.data() };
+			filepath += L'\\';
+			filepath.append(DEFAULT_VIDEO_FILENAME_VALUE);
+			SetDlgItemText(dlgHWND, IDC_FILE_NAME_EDIT, filepath.data());
+		}
 	}
 
 	bool processSaveVideoDlgCommand(WORD commandID, HWND dlgBoxhwnd, ApplicationState& appState)
@@ -174,6 +232,7 @@ namespace
 				return true;
 
 			case ID_CANCEL:
+				cancelVideo(dlgBoxhwnd, appState);
 				return true;
 
 			case ID_SELECT:
@@ -189,8 +248,20 @@ namespace
 			default:
 				return false;
 		}
-
 		return false;
+	}
+
+	void finishVideoCreationDialog(HWND dlgHwnd, ApplicationState& appState)
+	{
+		if (appState.conversionTask)
+		{
+			INT_PTR result = appState.conversionTask->get() == S_OK ? 0 : 1;
+			appState.conversionTask.reset();
+			EndDialog(dlgHwnd, result);
+			return;
+		}
+
+		EndDialog(dlgHwnd, 0);
 	}
 
 	INT_PTR CALLBACK SaveVideoDlgProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -201,6 +272,7 @@ namespace
 		{
 			case WM_INITDIALOG:
 				appState = reinterpret_cast<ApplicationState*>(lParam);
+				initVideoDlg(hwnd, *appState);
 			return TRUE;
 
 			case WM_COMMAND:
@@ -212,8 +284,8 @@ namespace
 			}
 			return TRUE;
 
-			case WM_USER+1:
-				EndDialog(hwnd, appState->conversionTask->get() == S_OK ? 0 : 1);
+			case WM_CONVERSION_FINISHED:
+				finishVideoCreationDialog(hwnd, *appState);
 				return TRUE;
 
 			default:
@@ -239,7 +311,6 @@ namespace
 		}
 
 		bool isLooped = SendMessage(appState.appHandles.loopBox, BM_GETCHECK, 0, 0) == BST_CHECKED;
-		bool isInvert = SendMessage(appState.appHandles.invEndBox, BM_GETCHECK, 0, 0) == BST_CHECKED;
 
 		appState.appHandles.timeline->play(isLooped, isInvert);
 
@@ -268,12 +339,6 @@ namespace
 		if (LOWORD(wp) == IDC_PLAY)
 		{
 			processPlayButton(appState);
-			return true;
-		}
-
-		if (LOWORD(wp) == IDC_STOP)
-		{
-			processStopButton(appState);
 			return true;
 		}
 
@@ -310,66 +375,44 @@ namespace
 		return false;
 	}
 
-	LRESULT CALLBACK mainWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+	void processResizeWindow(ApplicationState& appState)
 	{
-		if (msg == WM_CREATE)
+		auto dimension = getDimensions(*appState.layout, std::string(LAYOUT_IMAGE_CANVAS_NAME));
+		if (dimension)
 		{
-			LPCREATESTRUCT cs = reinterpret_cast<LPCREATESTRUCT>(lp);
-			auto state = reinterpret_cast<ApplicationState*>(cs->lpCreateParams);
-			SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+			appState.appHandles.imageCanvas->onResize(*dimension);
 		}
-		else
+
+		dimension = getDimensions(*appState.layout, std::string(LAYOUT_TIME_LINE_NAME));
+		if (dimension)
 		{
-			auto appState = reinterpret_cast<ApplicationState*>(::GetWindowLongPtr(hwnd, GWLP_USERDATA));
-			switch (msg)
-			{
-				case WM_NOTIFY:
-				{
-					auto [isProcessed, returnedCode] = appState->appHandles.nfileList->processNotify(wp, lp);
-					if (isProcessed)
-					{
-						return returnedCode;
-					}
-					break;
-				}
-
-				case WM_COMMAND:
-					processChild(wp, *appState);
-					return 0;
-
-				case WM_MOUSEMOVE:
-					if (appState->appHandles.nfileList->processMouseMoving(lp))
-					{
-						return 0;
-					}
-					break;
-
-				case WM_LBUTTONUP:
-					appState->appHandles.nfileList->processEndDragAndDrop(lp);
-					break;
-
-				case WM_DESTROY:
-					PostQuitMessage(0);
-					appState->isExit = true;
-					return 0;
-			}
+			appState.appHandles.nfileList->onResize(*dimension);
 		}
-		return DefWindowProc(hwnd, msg, wp, lp);
+
+		dimension = getDimensions(*appState.layout, std::string(LAYOUT_PLAY_BUTTON_NAME));
+		if (dimension)
+		{
+			::SetWindowPos(appState.appHandles.playButton, HWND_TOP, dimension->x, dimension->y,
+				dimension->width,
+				dimension->height,
+				SWP_NOZORDER);
+		}
 	}
 
 	bool createAppWindows(HINSTANCE hInstance, ApplicationState& appState)
 	{
-		appState.appHandles.imageCanvas.emplace(appState.appHandles.appHandle, ::RECT{10, 10, 1110, 710});
-
-		int buttonWidth = 350;
-		int buttonHeight = 20;
-
-		int left = appState.windowRect.right - buttonWidth - 10;
-
-		int listHeight = 300;
-		int listTop = 10 ;
-		::RECT listViewRect{left, listTop, left + buttonWidth, listTop + listHeight };
-		appState.appHandles.nfileList.emplace(appState.appHandles.appHandle, listViewRect);
+		auto dimension = getDimensions(*appState.layout, std::string(LAYOUT_IMAGE_CANVAS_NAME));
+		if (dimension)
+		{
+			appState.appHandles.imageCanvas.emplace(appState.appHandles.appHandle, *dimension);
+		}
+		
+		dimension = getDimensions(*appState.layout, std::string(LAYOUT_TIME_LINE_NAME));
+		if (dimension)
+		{
+			appState.appHandles.nfileList.emplace(appState.appHandles.appHandle, *dimension);
+		}
+		
 		appState.appHandles.nfileList->setOnSelectHandler(
 			[&appState](const std::vector<std::wstring>& data)
 			{
@@ -385,7 +428,6 @@ namespace
 			});
 
 		appState.appHandles.nfileList->createHeaders(std::initializer_list<SAV::HeaderDescription>{ {L"Pictures", 70}, {L"Time", 30} });
-
 		appState.appHandles.timeline.emplace(appState.appHandles.appHandle,
 			[&appState](const std::wstring& name)
 			{
@@ -396,53 +438,80 @@ namespace
 				}
 			});
 
-		int boxesTop = listViewRect.bottom + 10;
-		appState.appHandles.loopBox = ::CreateWindow(
-			WC_BUTTON,
-			L"loop",
-			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
-			left, boxesTop,
-			buttonWidth - 200, buttonHeight,
-			appState.appHandles.appHandle,
-			reinterpret_cast<HMENU>(IDC_LOOP_BOX),
-			hInstance,
-			NULL);
-
-		appState.appHandles.invEndBox = ::CreateWindow(
-			WC_BUTTON,
-			L"invert in the end",
-			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
-			left + 200, boxesTop,
-			buttonWidth - 200, buttonHeight,
-			appState.appHandles.appHandle,
-			reinterpret_cast<HMENU>(IDC_INVERSE_END_BOX),
-			hInstance,
-			NULL);
-
-		int playButtonTop = boxesTop + buttonHeight + 10;
-		appState.appHandles.playButton = ::CreateWindow(
-			WC_BUTTON,
-			L"play",
-			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
-			left, playButtonTop,
-			buttonWidth - 200, buttonHeight,
-			appState.appHandles.appHandle,
-			reinterpret_cast<HMENU>(IDC_PLAY),
-			hInstance,
-			NULL);
-
-		appState.appHandles.stopButton = ::CreateWindow(
-			WC_BUTTON,
-			L"stop",
-			WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
-			left + 200, playButtonTop,
-			buttonWidth - 200, buttonHeight,
-			appState.appHandles.appHandle,
-			reinterpret_cast<HMENU>(IDC_STOP),
-			hInstance,
-			NULL);
+		dimension = getDimensions(*appState.layout, std::string(LAYOUT_PLAY_BUTTON_NAME));
+		if (dimension)
+		{
+			appState.appHandles.playButton = ::CreateWindow(
+				WC_BUTTON,
+				L"play",
+				WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
+				static_cast<int>(dimension->x),
+				static_cast<int>(dimension->y),
+				static_cast<int>(dimension->width),
+				static_cast<int>(dimension->height),
+				appState.appHandles.appHandle,
+				reinterpret_cast<HMENU>(IDC_PLAY),
+				hInstance,
+				NULL);
+		}
 
 		return true;
+	}
+
+	LRESULT CALLBACK mainWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+	{
+		if (msg == WM_CREATE)
+		{
+			LPCREATESTRUCT cs = reinterpret_cast<LPCREATESTRUCT>(lp);
+			auto state = reinterpret_cast<ApplicationState*>(cs->lpCreateParams);
+			SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+		}
+		else
+		{
+			auto appState = reinterpret_cast<ApplicationState*>(::GetWindowLongPtr(hwnd, GWLP_USERDATA));
+			switch (msg)
+			{
+			case WM_NOTIFY:
+			{
+				auto [isProcessed, returnedCode] = appState->appHandles.nfileList->processNotify(wp, lp);
+				if (isProcessed)
+				{
+					return returnedCode;
+				}
+				break;
+			}
+
+			case WM_SIZE:
+			{
+				auto width = LOWORD(lp);
+				auto height = HIWORD(lp);
+				appState->layout->resize(width, height);
+				processResizeWindow(*appState);
+				return 0;
+			}
+
+			case WM_COMMAND:
+				processChild(wp, *appState);
+				return 0;
+
+			case WM_MOUSEMOVE:
+				if (appState->appHandles.nfileList->processMouseMoving(lp))
+				{
+					return 0;
+				}
+				break;
+
+			case WM_LBUTTONUP:
+				appState->appHandles.nfileList->processEndDragAndDrop(lp);
+				break;
+
+			case WM_DESTROY:
+				PostQuitMessage(0);
+				appState->isExit = true;
+				return 0;
+			}
+		}
+		return DefWindowProc(hwnd, msg, wp, lp);
 	}
 
 	struct GdiPlusDeleter
@@ -462,9 +531,14 @@ namespace
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow)
 {
 	Gdiplus::GdiplusStartupInput gdiplusStartupInput;
-	ULONG_PTR           gdiplusToken;
+	ULONG_PTR gdiplusToken;
 	Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
 	std::unique_ptr<ULONG_PTR, GdiPlusDeleter> gdiplusHandle(gdiplusToken, GdiPlusDeleter());
+
+	INITCOMMONCONTROLSEX iccex;
+	iccex.dwSize = sizeof(INITCOMMONCONTROLSEX);
+	iccex.dwICC = ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES | ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES;
+	::InitCommonControlsEx(&iccex);
 
 	constexpr const  wchar_t* wndClsName = L"Simple.Animation.Viewer.window";
 
@@ -488,8 +562,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
 	ApplicationState appState;
 	::RECT viewportRect{ 0L, 0L, static_cast<LONG>(WINDOW_WIDTH), static_cast<LONG>(WINDOW_HEIGHT) };
-	::AdjustWindowRect(&viewportRect, WS_OVERLAPPEDWINDOW, false);
-	appState.windowRect = viewportRect;
+	::AdjustWindowRect(&viewportRect, WS_OVERLAPPEDWINDOW, true);
+
+	appState.layout.emplace(
+		std::string(LAYOUT_ROOT_NAME),
+		SAV::Layout::ItemDimensions{ 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT },
+		SAV::Layout::ItemMargin{ 10, 10, 10, 10 })
+		.addItem<SAV::Layout::HBoxLayout>("").second
+		->addItem<SAV::Layout::BoxLayout>(std::string(LAYOUT_IMAGE_CANVAS_NAME), 1110).first
+		->addItem<SAV::Layout::VBoxLayout>("", "*", SAV::Layout::ItemMargin{ 10, 0, 0, 0 }).second
+		->addItem<SAV::Layout::BoxLayout>(std::string(LAYOUT_TIME_LINE_NAME), "90%").first
+		->addItem<SAV::Layout::BoxLayout>("", "*", SAV::Layout::ItemMargin{ 0, 10, 0, 0 }).second
+		->addItem<SAV::Layout::BoxLayout>(std::string(LAYOUT_PLAY_BUTTON_NAME));
 
 	appState.appHandles.appHandle = ::CreateWindowEx(
 		0,
@@ -497,8 +581,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 		L"Simple.Animation.Viewer",
 		WS_OVERLAPPEDWINDOW,
 		10, 10,
-		appState.windowRect.right - appState.windowRect.left,
-		appState.windowRect.bottom - appState.windowRect.top,
+		viewportRect.right - viewportRect.left, viewportRect.bottom - viewportRect.top,
 		nullptr,
 		nullptr,
 		hInstance,

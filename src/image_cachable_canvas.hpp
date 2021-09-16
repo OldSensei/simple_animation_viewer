@@ -17,6 +17,7 @@ namespace SAV
 		~ImageCachableCanvas() noexcept;
 
 		void drawImage(const std::filesystem::path& imagePath);
+		void onResize(const RECT& position);
 
 	private:
 		Gdiplus::Bitmap* getImage(const std::filesystem::path& imagePath);
